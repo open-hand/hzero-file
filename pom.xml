@@ -9,6 +9,7 @@
         <version>1.4.3.RELEASE</version>
     </parent>
     <artifactId>hzero-file-saas</artifactId>
+    <version>1.4.4.RELEASE</version>
 
     <properties>
         <aspose-words.version>1.4.0.RELEASE</aspose-words.version>

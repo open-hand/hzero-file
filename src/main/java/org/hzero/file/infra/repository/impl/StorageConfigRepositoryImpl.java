@@ -3,8 +3,11 @@ package org.hzero.file.infra.repository.impl;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.TimeUnit;
 import java.util.stream.Collectors;
 
+import com.google.common.cache.Cache;
+import com.google.common.cache.CacheBuilder;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.ObjectUtils;
 import org.apache.commons.lang3.StringUtils;
@@ -15,6 +18,7 @@ import org.hzero.core.redis.RedisHelper;
 import org.hzero.file.domain.entity.StorageConfig;
 import org.hzero.file.domain.repository.StorageConfigRepository;
 import org.hzero.file.domain.vo.StorageConfigVO;
+import org.hzero.file.infra.config.FileConfig;
 import org.hzero.file.infra.constant.FileServiceType;
 import org.hzero.file.infra.constant.HfleMessageConstant;
 import org.hzero.file.infra.mapper.StorageConfigMapper;
@@ -36,12 +40,30 @@ import io.choerodon.core.exception.CommonException;
 @Component("storageConfigRepository")
 public class StorageConfigRepositoryImpl extends BaseRepositoryImpl<StorageConfig> implements StorageConfigRepository {
 
+    private final LovAdapter lovAdapter;
+    private final FileConfig fileConfig;
+    private final RedisHelper redisHelper;
+    private final StorageConfigMapper storageConfigMapper;
+
+    private Cache<Long, StorageConfig> storageConfigCache;
+
     @Autowired
-    private StorageConfigMapper storageConfigMapper;
-    @Autowired
-    private RedisHelper redisHelper;
-    @Autowired
-    private LovAdapter lovAdapter;
+    public StorageConfigRepositoryImpl(LovAdapter lovAdapter,
+                                       FileConfig fileConfig,
+                                       RedisHelper redisHelper,
+                                       StorageConfigMapper storageConfigMapper) {
+        this.lovAdapter = lovAdapter;
+        this.fileConfig = fileConfig;
+        this.redisHelper = redisHelper;
+        this.storageConfigMapper = storageConfigMapper;
+        if (fileConfig.getStoreCache().isEnable()) {
+            storageConfigCache = CacheBuilder.newBuilder()
+                    .expireAfterWrite(fileConfig.getStoreCache().getTime(), TimeUnit.SECONDS)
+                    .softValues()
+                    .initialCapacity(128)
+                    .build();
+        }
+    }
 
     @Override
     public List<StorageConfig> selectByUnique(Long tenantId, String storageCode) {
@@ -50,25 +72,33 @@ public class StorageConfigRepositoryImpl extends BaseRepositoryImpl<StorageConfi
 
     @Override
     public StorageConfig getStorageConfig(Long tenantId) {
-        StorageConfig storageConfig = new StorageConfig();
-        StorageConfig config = new StorageConfig();
-        //先从缓存中取
-        config.setTenantId(tenantId);
-        config.setDefaultFlag(BaseConstants.Flag.YES);
-        StorageConfigVO cache = config.getDefaultConfigCache(redisHelper);
-        if (cache != null) {
-            BeanUtils.copyProperties(cache, storageConfig);
-            return storageConfig;
-        } else {
-            // 从数据库取数据
-            storageConfig = selectOne(config);
+        StorageConfig storageConfig;
+        boolean useCache = fileConfig.getStoreCache().isEnable();
+        if (useCache) {
+            storageConfig = storageConfigCache.getIfPresent(tenantId);
             if (storageConfig != null) {
-                // 刷新缓存，返回数据
-                config.refreshDefaultConfigCache(redisHelper, storageConfig);
                 return storageConfig;
             }
         }
-        return null;
+        storageConfig = new StorageConfig();
+        StorageConfig param = new StorageConfig().setTenantId(tenantId).setDefaultFlag(BaseConstants.Flag.YES);
+        // 先从缓存中取
+        StorageConfigVO cache = param.getDefaultConfigCache(redisHelper);
+        if (cache != null) {
+            BeanUtils.copyProperties(cache, storageConfig);
+        } else {
+            // 从数据库取数据
+            storageConfig = selectOne(param);
+            if (storageConfig != null) {
+                // 刷新缓存，返回数据
+                param.refreshDefaultConfigCache(redisHelper, storageConfig);
+            }
+        }
+        // 记录二级缓存
+        if (useCache && storageConfig != null) {
+            storageConfigCache.put(tenantId, storageConfig);
+        }
+        return storageConfig;
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -127,6 +157,9 @@ public class StorageConfigRepositoryImpl extends BaseRepositoryImpl<StorageConfi
         // 若是默认配置，刷新缓存
         if (Objects.equals(storageConfig.getDefaultFlag(), BaseConstants.Flag.YES)) {
             storageConfig.refreshDefaultConfigCache(redisHelper, selectByPrimaryKey(storageConfig.getStorageConfigId()));
+            if (fileConfig.getStoreCache().isEnable()) {
+                storageConfigCache.put(storageConfig.getTenantId(), storageConfig);
+            }
         }
     }
 

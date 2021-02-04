@@ -102,6 +102,11 @@ ribbon:
 
 hzero:
   file:
+    store-cache:
+      # 文件存储配置二级缓存有效期 单位秒
+      time: ${HZERO_FILE_STORE_CACHE_TIME:3600}
+      # 是否开启文件存储配置二级缓存
+      enable: ${HZERO_FILE_STORE_CACHE_ENABLE:false}
     preview-type: ${HZERO_PREVIEW_TYPE:onlyOffice}
     # kk-file-view-url: http://172.20.0.201:7700/onlinePreview
     only-office:
